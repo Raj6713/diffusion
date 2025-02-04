@@ -899,3 +899,114 @@ class TokenEmbeddingHandler:
             self.embedding_settings[f"index_no_updates_{idx}"] = index_no_updates
             logger.info(self.embedding_settings[f"index_no_updates_{idx}".shape])
             idx += 1
+
+    def save_embeddings(self, file_path: str):
+        assert (
+            self.train_ids is not None
+        ), "Initialize new tokens before saving embeddings"
+        tensors = {}
+        idx_to_text_encoder_name = {0: "clip_1", 1: "t5"}
+        for idx, text_encoder in enumerate(self.text_encoders):
+            train_ids = self.train_ids if idx == 0 else self.train_ids_t5
+            embeds = (
+                text_encoder.text_model.embeddings.token_embedding
+                if idx == 0
+                else text_encoder.encoder.embed_tokens
+            )
+            assert embeds.weight.data.shape[0] == len(
+                self.tokenizers[idx]
+            ), "Tokenizers should be the same"
+            new_token_embeddings = embeds.weight.data[train_ids]
+            tensors[idx_to_text_encoder_name[idx]] = new_token_embeddings
+
+    @property
+    def dtype(self):
+        return self.text_encoders[0].dtype
+
+    @property
+    def device(self):
+        return self.text_encoders[0].device
+
+    @torch.no_grad()
+    def retract_embeddings(self):
+        for idx, text_encoder in enumerate(self.text_encoders):
+            embeds = (
+                text_encoder.text_model.embeddings.token_embedding
+                if idx == 0
+                else text_encoder.encoder.embed_tokens
+            )
+            index_no_updates = self.embedding_settings[f"index_no_updates_{idx}"]
+            embeds.weight.data[index_no_updates] = (
+                self.embedding_settings[f"original_embeddings_{idx}"][index_no_updates]
+                .to(device=text_encoder.device)
+                .to(dtype=text_encoder.dtype)
+            )
+            std_token_embedding = self.embedding_settings[f"std_token_embedding_{idx}"]
+            index_updates = ~index_no_updates
+            new_embedddings = embeds.weight.data[index_updates]
+            off_ratio = std_token_embedding / new_embedddings.std()
+            new_embedddings = new_embedddings * (off_ratio**0.1)
+            embeds.weight.data[index_updates] = new_embedddings
+
+
+class DreamBoothDataset(Dataset):
+    def __init__(
+        self,
+        instance_data_root,
+        instacne_prompt,
+        class_prompt,
+        train_text_encoder_ti,
+        token_abstaction_dict=None,
+        class_data_root=None,
+        class_num=None,
+        size=1024,
+        repeats=1,
+        center_crop=False,
+    ):
+        self.size = size
+        self.center_crop = center_crop
+        self.instance_prompt = instacne_prompt
+        self.custom_instance_prompts = None
+        self.class_prompt = class_prompt
+        self.token_abstraction_dict = token_abstaction_dict
+        self.train_text_encoder_ti = train_text_encoder_ti
+        if args.dataset_name is not None:
+            try:
+                from datasets import load_dataset
+            except ImportError:
+                raise ImportError(
+                    "You are trying to load your data using the datasets library. If you wish to train using custom"
+                    "captions please install the datasets library"
+                )
+            dataset = load_dataset(
+                args.dataset_name, args.dataset_config_name, cache_dir=args.cache_dir
+            )
+            column_names = dataset["train"].column_names
+            if args.image_column is None:
+                image_column = column_names[0]
+                logger.info(f"Image column defaulting to {image_column}")
+            else:
+                image_column = args.image_column
+                if image_column not in column_names:
+                    raise ValueError(
+                        f"`--image_column` value '{args.image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
+                    )
+
+            instance_images = dataset["train"][image_column]
+            if args.caption_column is None:
+                logger.info(
+                    "No caption column provided, defaulting to instance_prompt for all images. If your dataset"
+                    "contains captions/prompts for the images, make sure to specify the column as --caption_column"
+                )
+                self.custom_instance_prompts = None
+            else:
+                if args.caption_column not in column_names:
+                    raise ValueError(
+                        f"`--caption_column` value '{args.caption_column}' not found in dataset column."
+                    )
+                custom_instance_prompts = dataset["train"][args.caption_column]
+                self.custom_instance_prompts = []
+                for caption in custom_instance_prompts:
+                    self.custom_instance_prompts.extend(
+                        itertools.repeat(caption, repeats)
+                    )

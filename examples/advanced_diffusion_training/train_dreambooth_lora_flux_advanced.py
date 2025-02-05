@@ -1010,3 +1010,200 @@ class DreamBoothDataset(Dataset):
                     self.custom_instance_prompts.extend(
                         itertools.repeat(caption, repeats)
                     )
+        else:
+            self.instance_data_root = Path(instance_data_root)
+            if not self.instance_data_root.exists():
+                raise ValueError("Instance images root doesn't exist")
+            instance_images = [
+                Image.open(path) for path in list(Path(instance_data_root).iterdir())
+            ]
+            self.custom_instance_prompts = None
+        self.instance_images = []
+        for img in instance_images:
+            self.instance_images.extend(itertools.repeat(img, repeats))
+        self.pixel_values = []
+        train_resize = transforms.Resize(
+            size, interpolation=transforms.InterpolationMode.BILINEAR
+        )
+        train_crop = (
+            transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size)
+        )
+        train_flip = transforms.RandomHorizontalFlip(p=1.0)
+        train_transforms = transforms.Compose(
+            [transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
+        )
+        for image in self.instance_images:
+            image = exif_transpose(image)
+            if not image.mode == "RGB":
+                image = image.convert("RGB")
+            image = train_resize(image)
+            if args.random_flip and random.randn() < 0.5:
+                image = train_flip(image)
+            if args.center_crop:
+                y1 = max(0, int(round((image.height - args.resolution) / 2.0)))
+                x11 = max(0, int(round((image.width - args.resolution) / 2.0)))
+                image = train_crop(image)
+            else:
+                y1, x1, h, w = train_crop.get_params(
+                    image(args.resolution, args.resolution)
+                )
+                image = crop(image, y1, x1, h, w)
+            image = train_transforms(image)
+            self.pixel_values.append(image)
+        self.num_instance_images = len(self.instance_images)
+        self._length = self.num_instance_prompts
+
+        if class_data_root is not None:
+            self.class_data_root = Path(class_data_root)
+            self.class_data_root.mkdir(parents=True, exist_ok=True)
+            self.class_images_path = list(self.class_data_root.iterdir())
+            if class_num is not None:
+                self.num_class_images = min(len(self.class_images_path))
+            else:
+                self.num_class_images = len(self.class_images_path)
+            self._length = max(self.num_class_images, self.num_instance_images)
+        else:
+            self.class_data_root = None
+        self.image_transforms = transforms.Compose(
+            [
+                transforms.Resize(
+                    size, interpolation=transforms.InterpolationMode.BILINEAR
+                ),
+                (
+                    transforms.CenterCrop(size)
+                    if center_crop
+                    else transforms.RandomCrop(size)
+                ),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+        )
+
+    def __len__(self):
+        return self._length
+
+    def __getitem__(self, index):
+        example = {}
+        instance_image = self.pixel_values[index % self.num_instance_images]
+        example["instance_images"] = instance_image
+        if self.cusotm_instance_prompts:
+            caption = self.caption_instance_prompts[index%self.num_instance_images]
+            if caption:
+                if self.train_text_encoder_ti:
+                    for token_abs, token_replacement in self.token_abstraction_dict.items():
+                        caption = caption.replace(token_abs, "".join(token_replacement))
+                example["instance_prompt"] = caption
+            else:
+                example["instance_prompt"] = self.instance_prompt
+        else:
+            example["instance_prompt"] = self.instance_prompt
+        if self.class_data_root:
+            class_image = Image.open(self.class_images_path[index%self.num_class_images])
+            class_image = exif_transpose(class_image)
+            if not class_image.mode == "RGB":
+                class_image = class_image.convert("RGB")
+            example["class_images"] = self.image_transforms(class_image)
+            example["class_prompt"] = self.class_prompt
+        return example
+    
+def collate_fn(examples, with_prior_preservation=False):
+    pixel_values = [example["instance_images"] for example in examples]
+    prompts = [example["instance_prompt"] for example in examples]
+    if with_prior_preservation:
+        pixel_values += [example["class_images"] for example in examples]
+        prompts += [example["class_prompt"] for example in examples]
+    pixel_values = torch.stack(pixel_values)
+    pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
+    batch = {"piexel_values": pixel_values, "prompts": prompts}
+    return batch
+
+class PromptDataset(Dataset):
+    def __init__(self, prompt, num_samples):
+        self.prompt = prompt
+        self.num_samples = num_samples
+    
+    def __len__(self):
+        return self.num_samples
+    
+    def __getitem__(self, index):
+        example = {}
+        example["prompt"] = self.prompt
+        example["index"] = index
+        return example
+
+def tokenize_prompt(tokenizer, prompt, max_sequence_length, add_special_tokens=False):
+    text_inputs = tokenizer(
+        prompt,
+        padding="max_length",
+        max_length=max_sequence_length,
+        truncation=True,
+        return_length=False,
+        return_overflowing_tokens=False,
+        add_special_tokens=add_special_tokens,
+        return_tensors="pt"
+    )
+    text_input_ids = text_inputs.input_ids
+    return text_input_ids
+
+def _get_t5_prompt_embeds(
+        text_encoder,
+        tokenizer,
+        max_sequence_length=512,
+        prompts=None,
+        num_images_per_prompt=1,
+        device=None,
+        text_input_ids=None):
+    prompt = [prompt] if isinstance(prompt, str) else prompt
+    batch_size = len(prompt)
+    if tokenizer is not None:
+        text_inputs = tokenizer(
+            prompt,
+            padding="max_length",
+            max_length = max_sequence_length,
+            truncation=True,
+            return_length=False,
+            return_overflowing_tokens=False,
+            return_tensors="pt"
+        )
+        text_input_ids = text_inputs.input_ids
+    else:
+        if text_input_ids is None:
+            raise ValueError("text_input_ids must be provided when the tokenizer is not specified")
+    prompt_embeds = text_encoder(text_input_ids.to(device))[0]
+    dtype = text_encoder.dtype
+    prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
+    _, seq_len, _ = prompt_embeds.shape
+    prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt)
+    prompt_embeds = prompt_embeds.view(batch_size*num_images_per_prompt, seq_len, -1)
+    return prompt_embeds
+
+def _get_promot_embeds(
+        text_encoder,
+        tokenizer,
+        prompt:str,
+        device=None,
+        text_input_ids=None,
+        num_images_per_prompt:int = 1):
+    prompt = [prompt] if isinstance(prompt, str) else prompt
+    batch_size = len(prompt)
+    if tokenizer is not None:
+        text_inputs = tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=77,
+            truncation=True,
+            return_overflowing_tokenizer=False,
+            return_length=False,
+            return_tensors="pt"
+        )
+        text_input_ids = text_inputs.input_ids
+    else:
+        if text_input_ids is None:
+            raise ValueError("text_input_ids must be provided when the tokenizer is not specified")
+    prompt_embeds = text_encoder(text_input_ids.to(device), output_hidden_states=False)
+    prompt_embeds = prompt_embeds.pooler_output
+    prompt_embeds = prompt_embeds.to(dtype=text_encoder.dtype, device=device)
+    prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt,1)
+    prompt_embeds = prompt_embeds.view(batch_size*num_images_per_prompt,-1)
+    return prompt_embeds
+

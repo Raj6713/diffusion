@@ -1207,3 +1207,43 @@ def _get_promot_embeds(
     prompt_embeds = prompt_embeds.view(batch_size*num_images_per_prompt,-1)
     return prompt_embeds
 
+def encoder_prompt(text_encoders, tokenizers, prompt:str, max_sequence_length, device=None, num_images_per_prompt:int=1, text_input_ids_list=None):
+    prompt = [prompt]  if isinstance(prompt, str) else prompt
+    batch_size = len(prompt)
+    dtype = text_encoders[0].dtype
+    pooled_prompt_embeds = _get_clup_promot_embeds(
+        text_encoders=text_encoders[0],
+        tokenizer=tokenizers[0],
+        prompt=prompt,
+        device=device if device is not None else text_encoders[0].device
+        num_images_per_prompt=num_images_per_prompt
+        text_input_ids=text_input_ids_list[0] if text_input_ids_list is not None else None
+    )
+    prompt_embeds = _get_t5_prompt_embeds(
+        text_encoder=text_encoders[1],
+        tokenizer=tokenizers[1],
+        max_sequence_length=max_sequence_length,
+        prompt=prompt,
+        num_images_per_prompt=num_images_per_prompt,
+        device =device if device is not None else text_encoders[1].device,
+        text_input_ids=text_input_ids_list[1] if text_input_ids_list is not None else None
+    )
+    text_ids = torch.zeros(batch_size, prompt_embeds.shape[1], 3).to(device=device, dtype=dtype)
+    text_ids = text_ids.repeat(num_images_per_prompt, 1,1)
+    return prompt_embeds, pooled_prompt_embeds, text_ids
+
+class CustomFlowMatchEulerDiscreteScheduler(FLowMatchEulerDiscreteScheduler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args,**kwargs)
+        with torch.no_grad():
+            num_timesteps = 1000
+            sigma_sqrt_weighing = (self.sigmas**-2.0).float()
+            sigma_sqrt_weighing = torch.clamp(sigma_sqrt_weighing, max=1e4)
+            sigma_sqrt_weighing = sigma_sqrt_weighing/sigma_sqrt_weighing.mean()
+            timesteps = torch.linspace(1000,0, num_timesteps, device="cpu")
+            self.linear_timesteps = timesteps
+            self.linear_timesteps_weights = sigma_sqrt_weighing
+            pass
+    
+    def get_wei
+

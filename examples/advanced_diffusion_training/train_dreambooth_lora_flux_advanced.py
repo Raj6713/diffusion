@@ -890,9 +890,9 @@ class TokenEmbeddingHandler:
                     embeds.weight.data[token_id] = (embeds.weight.data)[
                         initializer_token_ids[token_idx % len(initializer_token_ids)]
                     ].clone()
-            self.embeddings_settings[f"original_embeddings_{idx}"] = (
-                embeds.weight.data.clone()
-            )
+            self.embeddings_settings[
+                f"original_embeddings_{idx}"
+            ] = embeds.weight.data.clone()
             self.embedding_settings[f"std_token_embeddings_{idx}"] = std_token_embedding
             index_no_updates = torch.ones((len(tokenizer),), dtype=torch.bool)
             index_no_updates[train_ids] = False
@@ -945,7 +945,7 @@ class TokenEmbeddingHandler:
             index_updates = ~index_no_updates
             new_embedddings = embeds.weight.data[index_updates]
             off_ratio = std_token_embedding / new_embedddings.std()
-            new_embedddings = new_embedddings * (off_ratio**0.1)
+            new_embedddings = new_embedddings * (off_ratio ** 0.1)
             embeds.weight.data[index_updates] = new_embedddings
 
 
@@ -1087,10 +1087,13 @@ class DreamBoothDataset(Dataset):
         instance_image = self.pixel_values[index % self.num_instance_images]
         example["instance_images"] = instance_image
         if self.cusotm_instance_prompts:
-            caption = self.caption_instance_prompts[index%self.num_instance_images]
+            caption = self.caption_instance_prompts[index % self.num_instance_images]
             if caption:
                 if self.train_text_encoder_ti:
-                    for token_abs, token_replacement in self.token_abstraction_dict.items():
+                    for (
+                        token_abs,
+                        token_replacement,
+                    ) in self.token_abstraction_dict.items():
                         caption = caption.replace(token_abs, "".join(token_replacement))
                 example["instance_prompt"] = caption
             else:
@@ -1098,14 +1101,17 @@ class DreamBoothDataset(Dataset):
         else:
             example["instance_prompt"] = self.instance_prompt
         if self.class_data_root:
-            class_image = Image.open(self.class_images_path[index%self.num_class_images])
+            class_image = Image.open(
+                self.class_images_path[index % self.num_class_images]
+            )
             class_image = exif_transpose(class_image)
             if not class_image.mode == "RGB":
                 class_image = class_image.convert("RGB")
             example["class_images"] = self.image_transforms(class_image)
             example["class_prompt"] = self.class_prompt
         return example
-    
+
+
 def collate_fn(examples, with_prior_preservation=False):
     pixel_values = [example["instance_images"] for example in examples]
     prompts = [example["instance_prompt"] for example in examples]
@@ -1117,19 +1123,21 @@ def collate_fn(examples, with_prior_preservation=False):
     batch = {"piexel_values": pixel_values, "prompts": prompts}
     return batch
 
+
 class PromptDataset(Dataset):
     def __init__(self, prompt, num_samples):
         self.prompt = prompt
         self.num_samples = num_samples
-    
+
     def __len__(self):
         return self.num_samples
-    
+
     def __getitem__(self, index):
         example = {}
         example["prompt"] = self.prompt
         example["index"] = index
         return example
+
 
 def tokenize_prompt(tokenizer, prompt, max_sequence_length, add_special_tokens=False):
     text_inputs = tokenizer(
@@ -1140,50 +1148,56 @@ def tokenize_prompt(tokenizer, prompt, max_sequence_length, add_special_tokens=F
         return_length=False,
         return_overflowing_tokens=False,
         add_special_tokens=add_special_tokens,
-        return_tensors="pt"
+        return_tensors="pt",
     )
     text_input_ids = text_inputs.input_ids
     return text_input_ids
 
+
 def _get_t5_prompt_embeds(
-        text_encoder,
-        tokenizer,
-        max_sequence_length=512,
-        prompts=None,
-        num_images_per_prompt=1,
-        device=None,
-        text_input_ids=None):
+    text_encoder,
+    tokenizer,
+    max_sequence_length=512,
+    prompts=None,
+    num_images_per_prompt=1,
+    device=None,
+    text_input_ids=None,
+):
     prompt = [prompt] if isinstance(prompt, str) else prompt
     batch_size = len(prompt)
     if tokenizer is not None:
         text_inputs = tokenizer(
             prompt,
             padding="max_length",
-            max_length = max_sequence_length,
+            max_length=max_sequence_length,
             truncation=True,
             return_length=False,
             return_overflowing_tokens=False,
-            return_tensors="pt"
+            return_tensors="pt",
         )
         text_input_ids = text_inputs.input_ids
     else:
         if text_input_ids is None:
-            raise ValueError("text_input_ids must be provided when the tokenizer is not specified")
+            raise ValueError(
+                "text_input_ids must be provided when the tokenizer is not specified"
+            )
     prompt_embeds = text_encoder(text_input_ids.to(device))[0]
     dtype = text_encoder.dtype
     prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
     _, seq_len, _ = prompt_embeds.shape
     prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt)
-    prompt_embeds = prompt_embeds.view(batch_size*num_images_per_prompt, seq_len, -1)
+    prompt_embeds = prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)
     return prompt_embeds
 
+
 def _get_promot_embeds(
-        text_encoder,
-        tokenizer,
-        prompt:str,
-        device=None,
-        text_input_ids=None,
-        num_images_per_prompt:int = 1):
+    text_encoder,
+    tokenizer,
+    prompt: str,
+    device=None,
+    text_input_ids=None,
+    num_images_per_prompt: int = 1,
+):
     prompt = [prompt] if isinstance(prompt, str) else prompt
     batch_size = len(prompt)
     if tokenizer is not None:
@@ -1194,30 +1208,43 @@ def _get_promot_embeds(
             truncation=True,
             return_overflowing_tokenizer=False,
             return_length=False,
-            return_tensors="pt"
+            return_tensors="pt",
         )
         text_input_ids = text_inputs.input_ids
     else:
         if text_input_ids is None:
-            raise ValueError("text_input_ids must be provided when the tokenizer is not specified")
+            raise ValueError(
+                "text_input_ids must be provided when the tokenizer is not specified"
+            )
     prompt_embeds = text_encoder(text_input_ids.to(device), output_hidden_states=False)
     prompt_embeds = prompt_embeds.pooler_output
     prompt_embeds = prompt_embeds.to(dtype=text_encoder.dtype, device=device)
-    prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt,1)
-    prompt_embeds = prompt_embeds.view(batch_size*num_images_per_prompt,-1)
+    prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
+    prompt_embeds = prompt_embeds.view(batch_size * num_images_per_prompt, -1)
     return prompt_embeds
 
-def encoder_prompt(text_encoders, tokenizers, prompt:str, max_sequence_length, device=None, num_images_per_prompt:int=1, text_input_ids_list=None):
-    prompt = [prompt]  if isinstance(prompt, str) else prompt
+
+def encoder_prompt(
+    text_encoders,
+    tokenizers,
+    prompt: str,
+    max_sequence_length,
+    device=None,
+    num_images_per_prompt: int = 1,
+    text_input_ids_list=None,
+):
+    prompt = [prompt] if isinstance(prompt, str) else prompt
     batch_size = len(prompt)
     dtype = text_encoders[0].dtype
-    pooled_prompt_embeds = _get_clup_promot_embeds(
+    pooled_prompt_embeds = _get_clip_promot_embeds(
         text_encoders=text_encoders[0],
         tokenizer=tokenizers[0],
         prompt=prompt,
-        device=device if device is not None else text_encoders[0].device
-        num_images_per_prompt=num_images_per_prompt
-        text_input_ids=text_input_ids_list[0] if text_input_ids_list is not None else None
+        device=device if device is not None else text_encoders[0].device,
+        num_images_per_prompt=num_images_per_prompt,
+        text_input_ids=text_input_ids_list[0]
+        if text_input_ids_list is not None
+        else None,
     )
     prompt_embeds = _get_t5_prompt_embeds(
         text_encoder=text_encoders[1],
@@ -1225,25 +1252,160 @@ def encoder_prompt(text_encoders, tokenizers, prompt:str, max_sequence_length, d
         max_sequence_length=max_sequence_length,
         prompt=prompt,
         num_images_per_prompt=num_images_per_prompt,
-        device =device if device is not None else text_encoders[1].device,
-        text_input_ids=text_input_ids_list[1] if text_input_ids_list is not None else None
+        device=device if device is not None else text_encoders[1].device,
+        text_input_ids=text_input_ids_list[1]
+        if text_input_ids_list is not None
+        else None,
     )
-    text_ids = torch.zeros(batch_size, prompt_embeds.shape[1], 3).to(device=device, dtype=dtype)
-    text_ids = text_ids.repeat(num_images_per_prompt, 1,1)
+    text_ids = torch.zeros(batch_size, prompt_embeds.shape[1], 3).to(
+        device=device, dtype=dtype
+    )
+    text_ids = text_ids.repeat(num_images_per_prompt, 1, 1)
     return prompt_embeds, pooled_prompt_embeds, text_ids
+
 
 class CustomFlowMatchEulerDiscreteScheduler(FLowMatchEulerDiscreteScheduler):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args,**kwargs)
+        super().__init__(*args, **kwargs)
         with torch.no_grad():
             num_timesteps = 1000
-            sigma_sqrt_weighing = (self.sigmas**-2.0).float()
+            sigma_sqrt_weighing = (self.sigmas ** -2.0).float()
             sigma_sqrt_weighing = torch.clamp(sigma_sqrt_weighing, max=1e4)
-            sigma_sqrt_weighing = sigma_sqrt_weighing/sigma_sqrt_weighing.mean()
-            timesteps = torch.linspace(1000,0, num_timesteps, device="cpu")
+            sigma_sqrt_weighing = sigma_sqrt_weighing / sigma_sqrt_weighing.mean()
+            timesteps = torch.linspace(1000, 0, num_timesteps, device="cpu")
             self.linear_timesteps = timesteps
             self.linear_timesteps_weights = sigma_sqrt_weighing
             pass
-    
-    def get_wei
 
+    def get_weights_for_timesteps(self, timesteps: torch.Tensor) -> torch.Tensor:
+        step_indices = [(self.timesteps == t).nonzero() for t in timesteps]
+        weights = self.linear_timesteps_weights(step_indices).flatten()
+        return weights
+
+    def get_sigmas(self, timesteps: torch.Tensor, n_dim, dtype, device) -> torch.Tensor:
+        sigmas = self.sigmas.to(device=device, dtype=dtype)
+        schedule_timesteps = self.timesteps.to(device)
+        timesteps = timesteps.to(device)
+        step_indices = [(schedule_timesteps == t).nonzero() for t in timesteps]
+        sigma = sigmas[step_indices].flatten()
+        while len(sigma.shape) < n_dim:
+            sigma = sigma.unsqueeze(-1)
+        return sigma
+
+    def add_noise(
+        self,
+        original_samples: torch.Tensor,
+        noise: torch.Tensor,
+        timesteps: torch.Tensor,
+    ):
+        t_01 = (timesteps / 1000).to(original_samples.device)
+        noisy_model_input = (1 - t_01) * original_samples + t_01 * noise
+        return noisy_model_input
+
+    def scale_model_input(
+        self, sample: torch.Tensor, timestep: Union[float, torch.Tensor]
+    ) -> torch.Tensor:
+        return sample
+
+    def set_train_timesteps(self, num_timesteps, device, linear=False):
+        if linear:
+            timesteps = torch.linspace(1000, 0, num_timesteps, device=device)
+            self.timesteps = timesteps
+            return timesteps
+        else:
+            t = torch.sigmoid(torch.randn((num_timesteps,), device=device))
+            timesteps = (1 - t) * 1000
+            timesteps, _ = torch.sort(timesteps, descending=True)
+            self.timesteps = timesteps.to(device=device)
+            return timesteps
+
+
+def main(args):
+    if args.report_to == "wandb" and args.hub_token is not None:
+        raise ValueError(
+            "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token"
+            "Please use `huggingface-cli-login` to autehnticate with the hub"
+        )
+    if torch.backends.mps.is_available() and args.mixed_precision == "bf16":
+        raise ValueError(
+            "Mixed precision training with bfloat16 is not supported on MPS. Please use fp16 (recommended) or fp32 instead."
+        )
+    logging_dir = Path(args.output_dir, args.logging_dir)
+    accelerator_project_config = ProjectConfiguration(
+        project_dir=args.output_dir, logging_dir=logging_dir
+    )
+    kwargs = DistributionDataParallelKwargs(find_unused_parameters=True)
+    accelerator = Accelerator(
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        mixed_precision=args.mixed_precision,
+        log_with=args.report_to,
+        project_config=accelerator_project_config,
+        kwargs_handlers=[kwargs],
+    )
+    if torch.backends.mps.is_available():
+        accelerator.native_amp = False
+    if args.report_to == "wandb":
+        if not is_wandb_available():
+            raise ImportError(
+                "Make sure to install wandb if you want to use it for  logging during training."
+            )
+    logging.basicConfig(
+        format="%(asctime) - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%m/%d/%Y %H %M %S",
+        level=logging.INFO,
+    )
+    logger.info(accelerator.state, main_process_only=False)
+    if accelerator.is_local_main_process:
+        transformers.utils.logging.set_verbosity_warning()
+        diffusers.utils.logging.set_verbosity_info()
+    else:
+        transformers.utils.logging.set_verbosity_error()
+        diffusers.utils.logging.set_verbosity_error()
+    if args.seed is not None:
+        set_seed(args.seed)
+    if args.with_prior_preservation:
+        class_images_dir = Path(args.class_data_dir)
+        if not class_images_dir.exists():
+            class_images_dir.mkdir(parents=True)
+        curr_class_images = len(list(class_images_dir.iterdir()))
+
+        if curr_class_images < args.num_class_images:
+            has_supported_fp16_accelerator = (
+                torch.cuda.is_available() or torch.backends.mps.is_available()
+            )
+            torch_dtype = (
+                torch.float16 if has_supported_fp16_accelerator else torch.float32
+            )
+            if args.prior_generation_precision == "fp32":
+                torch_dtype = torch.float32
+            elif args.prior_generation_precision == "fp16":
+                torch_dtype = torch.float16
+            elif args.prior_generation_precision == "bf16":
+                torch_dtype == torch.bfloat16
+            pipeline = FluxPipeline.from_pretrained(
+                args.pretrained_model_name_or_path,
+                torch_dtype=torch_dtype,
+                revision=args.revision,
+                variant=args.variant,
+            )
+            pipeline.set_progress_bar_config(disable=True)
+            num_new_images = args.num_class_images - curr_class_images
+            logger.info(f"Number of class images to sample: {num_new_images}.")
+            sample_dataset = PromptDataset(args.class_prompt, num_new_images)
+            sample_dataloader = torch.utils.data.DataLoader(
+                sample_dataset, batch_size=args.sample_batch_size
+            )
+            sample_dataloader = accelerator.prepare(sample_dataloader)
+            pipeline.to(accelerator.device)
+            for example in tqdm(
+                sample_dataloader,
+                desc="Generating class images",
+                disable=not accelerator.is_local_main_process,
+            ):
+                images = pipeline(example["prompt"]).images
+                for i, image in enumerate(images):
+                    hash_image = insecure_hashlib.sha1(image.tobytes()).hexdigest()
+                    image_filename = class_images_dir / f"{example["index"][i] + curr_class_images}--{hash_image}.jpg"
+                    image.save(image_filename)
+            del pipeline
+            free_memory()
